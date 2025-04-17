@@ -1,0 +1,482 @@
+/*
+ * Copyright (c) 2025, SECORO
+ *
+ * Authors: Vamsi Kalagaturu
+ */
+
+#include "eddie-ros/interface.hpp"
+#include <signal.h>
+
+volatile sig_atomic_t keep_running = 1;
+
+void sigint_handler(int signum) { keep_running = 0; }
+
+double evaluate_equality_constraint(double quantity, double reference) {
+	return quantity - reference;
+}
+
+double evaluate_less_than_constraint(double quantity, double threshold) {
+	return (quantity < threshold) ? 0.0 : threshold - quantity;
+}
+
+double evaluate_greater_than_constraint(double quantity, double threshold) {
+	return (quantity > threshold) ? 0.0 : quantity - threshold;
+}
+
+double evaluate_bilateral_constraint(double quantity, double lower, double upper) {
+	if (quantity < lower)
+		return lower - quantity;
+	else if (quantity > upper)
+		return quantity - upper;
+	else
+		return 0.0;
+}
+
+PID::PID(double p_gain, double i_gain, double d_gain, double decay_rate) {
+	err_integ		 = 0.0;
+	err_last		 = 0.0;
+	kp				 = p_gain;
+	ki				 = i_gain;
+	kd				 = d_gain;
+	this->decay_rate = decay_rate;
+}
+
+double PID::control(double error, double dt) {
+	double err_diff = (error - err_last) / dt;
+
+	err_integ = decay_rate * err_integ + (1.0 - decay_rate) * error;
+	err_last  = error;
+
+	return kp * error + ki * err_integ + kd * err_diff;
+}
+
+EddieRosInterface::EddieRosInterface(const rclcpp::NodeOptions &options)
+	: rclcpp::Node("eddie_ros_interface", options) {
+
+	signal(SIGINT, sigint_handler);
+
+	// Declare parameters
+	this->declare_all_parameters();
+
+	ecat			= {};
+	drive_enc		= {};
+	imu				= {};
+	wheel_act		= {};
+	power_board		= {};
+	kinova_rightarm = {};
+	kinova_leftarm	= {};
+
+	if (!kdl_parser::treeFromFile("urdf/eddie.urdf", tree)) {
+		RCLCPP_ERROR(get_logger(), "Failed to construct kdl tree");
+		return;
+	} else {
+		RCLCPP_INFO(get_logger(), "KDL tree constructed successfully");
+	}
+	if (!tree.getChain("base_link", "eddie_left_arm_bracelet_link", leftarm_chain)) {
+		RCLCPP_ERROR(get_logger(), "Failed to get left arm chain");
+		return;
+	} else {
+		RCLCPP_INFO(get_logger(), "Left arm chain constructed successfully");
+	}
+	if (!tree.getChain("base_link", "eddie_right_arm_bracelet_link", rightarm_chain)) {
+		RCLCPP_ERROR(get_logger(), "Failed to get right arm chain");
+		return;
+	} else {
+		RCLCPP_INFO(get_logger(), "Right arm chain constructed successfully");
+	}
+
+	num_jnts_leftarm = leftarm_chain.getNrOfJoints();
+	num_segs_leftarm = leftarm_chain.getNrOfSegments();
+	root_acc_leftarm = KDL::Twist(KDL::Vector(0.0, 0.0, 0.0), KDL::Vector::Zero());
+	q_leftarm.resize(num_jnts_leftarm);
+	qd_leftarm.resize(num_jnts_leftarm);
+	qdd_leftarm.resize(num_jnts_leftarm);
+	tau_ctrl_leftarm.resize(num_jnts_leftarm);
+	f_ext_leftarm.resize(num_segs_leftarm);
+	fpk_solver_leftarm = std::make_unique<KDL::ChainFkSolverPos_recursive>(leftarm_chain);
+	fvk_solver_leftarm = std::make_unique<KDL::ChainFkSolverVel_recursive>(leftarm_chain);
+	rne_id_solver_leftarm =
+		std::make_unique<KDL::ChainIdSolver_RNE>(leftarm_chain, root_acc_leftarm.vel);
+
+	num_jnts_rightarm = rightarm_chain.getNrOfJoints();
+	num_segs_rightarm = rightarm_chain.getNrOfSegments();
+	root_acc_rightarm = KDL::Twist(KDL::Vector(0.0, 0.0, 0.0), KDL::Vector::Zero());
+	q_rightarm.resize(num_jnts_rightarm);
+	qd_rightarm.resize(num_jnts_rightarm);
+	qdd_rightarm.resize(num_jnts_rightarm);
+	tau_ctrl_rightarm.resize(num_jnts_rightarm);
+	f_ext_rightarm.resize(num_segs_rightarm);
+	fpk_solver_rightarm = std::make_unique<KDL::ChainFkSolverPos_recursive>(rightarm_chain);
+	fvk_solver_rightarm = std::make_unique<KDL::ChainFkSolverVel_recursive>(rightarm_chain);
+	rne_id_solver_rightarm =
+		std::make_unique<KDL::ChainIdSolver_RNE>(rightarm_chain, root_acc_rightarm.vel);
+
+	RCLCPP_INFO(get_logger(), "Eddie ROS interface node initialized.");
+}
+
+EddieRosInterface::~EddieRosInterface() {}
+
+void EddieRosInterface::configure(events *eventData, EddieState *eddie_state) {
+	RCLCPP_INFO(get_logger(), "In configure state");
+
+	eddie_state->num_drives				 = NUM_DRIVES;
+	eddie_state->time.cycle_time_exp	 = 1000; // [us]
+	eddie_state->ecat.ethernet_if		 = param_ethernet_if.c_str();
+	eddie_state->ecat.num_exposed_slaves = NUM_SLAVES;
+	eddie_state->ecat.slave_idx[0]		 = 1; // power board
+	eddie_state->ecat.slave_idx[1]		 = 3; // drive 1 - Front Left
+	eddie_state->ecat.slave_idx[2]		 = 4; // drive 2 - Rear Left
+	eddie_state->ecat.slave_idx[3]		 = 6; // drive 3 - Rear Right
+	eddie_state->ecat.slave_idx[4]		 = 7; // drive 4 - Front Right
+
+	for (int i = 0; i < NUM_DRIVES; i++) {
+		eddie_state->kelo_cmd.ctrl_mode[i]			 = ROBIF2B_CTRL_MODE_FORCE;
+		eddie_state->kelo_cmd.max_current[i * 2 + 0] = 10;	 // [A]
+		eddie_state->kelo_cmd.max_current[i * 2 + 1] = 10;	 // [A]
+		eddie_state->kelo_cmd.trq_const[i * 2 + 0]	 = 0.29; // [Nm/A]
+		eddie_state->kelo_cmd.trq_const[i * 2 + 1]	 = 0.29; // [Nm/A]
+	}
+	eddie_state->kelo_msr.pvt_off[0] = 0.0;
+	eddie_state->kelo_msr.pvt_off[1] = 0.0;
+	eddie_state->kelo_msr.pvt_off[2] = 0.0;
+	eddie_state->kelo_msr.pvt_off[3] = 0.0;
+
+	eddie_state->ecat.name[0]		 = "KELO_ECAT_FRD2_PMU1.0";
+	eddie_state->ecat.prod_code[0]	 = 0x90001001;
+	eddie_state->ecat.input_size[0]	 = sizeof(eddie_state->ecat_comm.pb_msr_pdo);
+	eddie_state->ecat.output_size[0] = sizeof(eddie_state->ecat_comm.pb_cmd_pdo);
+	for (int i = 1; i < NUM_DRIVES + 1; i++) {
+		eddie_state->ecat.name[i]		 = "KELOD105";
+		eddie_state->ecat.prod_code[i]	 = 0x02001001;
+		eddie_state->ecat.input_size[i]	 = sizeof(eddie_state->ecat_comm.drv_msr_pdo[i - 1]);
+		eddie_state->ecat.output_size[i] = sizeof(eddie_state->ecat_comm.drv_cmd_pdo[i - 1]);
+	}
+
+	eddie_state->kinova_rightarm_state.ctrl_mode = ROBIF2B_CTRL_MODE_POSITION;
+	eddie_state->kinova_rightarm_state.success	 = false;
+	for (int i = 0; i < NUM_JOINTS; i++) {
+		eddie_state->kinova_rightarm_state.pos_msr[i] = 0.0;
+		eddie_state->kinova_rightarm_state.vel_msr[i] = 0.0;
+		eddie_state->kinova_rightarm_state.eff_msr[i] = 0.0;
+		eddie_state->kinova_rightarm_state.cur_msr[i] = 0.0;
+		eddie_state->kinova_rightarm_state.pos_cmd[i] = 0.0;
+		eddie_state->kinova_rightarm_state.vel_cmd[i] = 0.0;
+		eddie_state->kinova_rightarm_state.eff_cmd[i] = 0.0;
+		eddie_state->kinova_rightarm_state.cur_cmd[i] = 0.0;
+	}
+	eddie_state->kinova_rightarm_state.imu_ang_vel_msr[0] = 0.0;
+	eddie_state->kinova_rightarm_state.imu_ang_vel_msr[1] = 0.0;
+	eddie_state->kinova_rightarm_state.imu_ang_vel_msr[2] = 0.0;
+	eddie_state->kinova_rightarm_state.imu_lin_acc_msr[0] = 0.0;
+	eddie_state->kinova_rightarm_state.imu_lin_acc_msr[1] = 0.0;
+	eddie_state->kinova_rightarm_state.imu_lin_acc_msr[2] = 0.0;
+
+	// Connections
+	ecat.ethernet_if		= &eddie_state->ecat.ethernet_if[0];
+	ecat.num_exposed_slaves = &eddie_state->ecat.num_exposed_slaves;
+	ecat.slave_idx			= &eddie_state->ecat.slave_idx[0];
+	ecat.name				= &eddie_state->ecat.name[0];
+	ecat.product_code		= &eddie_state->ecat.prod_code[0];
+	ecat.input_size			= &eddie_state->ecat.input_size[0];
+	ecat.output_size		= &eddie_state->ecat.output_size[0];
+	ecat.error_code			= &eddie_state->ecat.error_code;
+	ecat.num_initial_slaves = &eddie_state->ecat.num_found_slaves;
+	ecat.num_current_slaves = &eddie_state->ecat.num_active_slaves;
+	ecat.is_connected		= &eddie_state->ecat.is_connected[0];
+
+	input[0] = &eddie_state->ecat_comm.pb_msr_pdo;
+	input[1] = &eddie_state->ecat_comm.drv_msr_pdo[0];
+	input[2] = &eddie_state->ecat_comm.drv_msr_pdo[1];
+	input[3] = &eddie_state->ecat_comm.drv_msr_pdo[2];
+	input[4] = &eddie_state->ecat_comm.drv_msr_pdo[3];
+
+	output[0] = &eddie_state->ecat_comm.pb_cmd_pdo;
+	output[1] = &eddie_state->ecat_comm.drv_cmd_pdo[0];
+	output[2] = &eddie_state->ecat_comm.drv_cmd_pdo[1];
+	output[3] = &eddie_state->ecat_comm.drv_cmd_pdo[2];
+	output[4] = &eddie_state->ecat_comm.drv_cmd_pdo[3];
+
+	ecat.input	= input;
+	ecat.output = output;
+
+	drive_enc.num_drives	= &eddie_state->num_drives;
+	drive_enc.msr_pdo		= &eddie_state->ecat_comm.drv_msr_pdo[0];
+	drive_enc.wheel_pos_msr = &eddie_state->kelo_msr.whl_pos[0];
+	drive_enc.wheel_vel_msr = &eddie_state->kelo_msr.whl_vel[0];
+	drive_enc.pivot_pos_msr = &eddie_state->kelo_msr.pvt_pos[0];
+	drive_enc.pivot_vel_msr = &eddie_state->kelo_msr.pvt_vel[0];
+	drive_enc.pivot_pos_off = &eddie_state->kelo_msr.pvt_off[0];
+
+	imu.num_drives		= &eddie_state->num_drives;
+	imu.msr_pdo			= &eddie_state->ecat_comm.drv_msr_pdo[0];
+	imu.imu_ang_vel_msr = &eddie_state->kelo_msr.imu_ang_vel[0];
+	imu.imu_lin_acc_msr = &eddie_state->kelo_msr.imu_lin_acc[0];
+
+	wheel_act.num_drives  = &eddie_state->num_drives;
+	wheel_act.cmd_pdo	  = &eddie_state->ecat_comm.drv_cmd_pdo[0];
+	wheel_act.ctrl_mode	  = &eddie_state->kelo_cmd.ctrl_mode[0];
+	wheel_act.act_vel_cmd = &eddie_state->kelo_cmd.vel[0];
+	wheel_act.act_trq_cmd = &eddie_state->kelo_cmd.trq[0];
+	wheel_act.act_cur_cmd = &eddie_state->kelo_cmd.cur[0];
+	wheel_act.max_current = &eddie_state->kelo_cmd.max_current[0];
+	wheel_act.trq_const	  = &eddie_state->kelo_cmd.trq_const[0];
+
+	power_board.msr_pdo		= &eddie_state->ecat_comm.pb_msr_pdo;
+	power_board.cmd_pdo		= &eddie_state->ecat_comm.pb_cmd_pdo;
+	power_board.time_stamp	= &eddie_state->kelo_msr.time_stamp;
+	power_board.status		= &eddie_state->kelo_msr.status;
+	power_board.voltage_msr = &eddie_state->kelo_msr.bat_volt;
+	power_board.current_msr = &eddie_state->kelo_msr.bat_cur;
+	power_board.power_msr	= &eddie_state->kelo_msr.bat_pwr;
+
+	kinova_rightarm.conf.ip_address			= "192.168.1.12";
+	kinova_rightarm.conf.port				= 10000;
+	kinova_rightarm.conf.port_real_time		= 10001;
+	kinova_rightarm.conf.user				= "admin";
+	kinova_rightarm.conf.password			= "admin";
+	kinova_rightarm.conf.session_timeout	= 60000;
+	kinova_rightarm.conf.connection_timeout = 2000;
+	double cycle_time						= 0.001;
+	kinova_rightarm.cycle_time				= &cycle_time;
+	kinova_rightarm.ctrl_mode				= &eddie_state->kinova_rightarm_state.ctrl_mode;
+	kinova_rightarm.jnt_pos_msr				= &eddie_state->kinova_rightarm_state.pos_msr[0];
+	kinova_rightarm.jnt_vel_msr				= &eddie_state->kinova_rightarm_state.vel_msr[0];
+	kinova_rightarm.jnt_trq_msr				= &eddie_state->kinova_rightarm_state.eff_msr[0];
+	kinova_rightarm.act_cur_msr				= &eddie_state->kinova_rightarm_state.cur_msr[0];
+	kinova_rightarm.jnt_pos_cmd				= &eddie_state->kinova_rightarm_state.pos_cmd[0];
+	kinova_rightarm.jnt_vel_cmd				= &eddie_state->kinova_rightarm_state.vel_cmd[0];
+	kinova_rightarm.jnt_trq_cmd				= &eddie_state->kinova_rightarm_state.eff_cmd[0];
+	kinova_rightarm.act_cur_cmd				= &eddie_state->kinova_rightarm_state.cur_cmd[0];
+	kinova_rightarm.success					= &eddie_state->kinova_rightarm_state.success;
+	kinova_rightarm.imu_ang_vel_msr = &eddie_state->kinova_rightarm_state.imu_ang_vel_msr[0];
+	kinova_rightarm.imu_lin_acc_msr = &eddie_state->kinova_rightarm_state.imu_lin_acc_msr[0];
+
+	RCLCPP_INFO(get_logger(), "ethercat_if: %s", eddie_state->ecat.ethernet_if);
+
+	robif2b_ethercat_configure(&ecat);
+	if (eddie_state->ecat.error_code < 0) {
+		RCLCPP_ERROR(get_logger(), "EtherCAT configuration failed.");
+		return;
+	}
+
+	robif2b_ethercat_start(&ecat);
+	if (eddie_state->ecat.error_code < 0) {
+		RCLCPP_ERROR(get_logger(), "EtherCAT start failed.");
+		return;
+	}
+
+	power_board.cmd_pdo->shutdown = 0;
+	power_board.cmd_pdo->command  = 0b00100000;
+	robif2b_eddie_power_board_update(&power_board);
+
+	robif2b_ethercat_update(&ecat);
+	if (eddie_state->ecat.error_code < 0) {
+		RCLCPP_ERROR(get_logger(), "EtherCAT update failed.");
+		return;
+	}
+
+	// kinova
+	robif2b_kinova_gen3_configure(&kinova_rightarm);
+	robif2b_kinova_gen3_recover(&kinova_rightarm);
+	robif2b_kinova_gen3_start(&kinova_rightarm);
+
+	RCLCPP_INFO(get_logger(), "Eddie ROS interface configured.");
+
+	produce_event(eventData, E_CONFIGURE_EXIT);
+}
+
+void EddieRosInterface::idle(events *eventData, EddieState *eddie_state) {
+	RCLCPP_INFO(get_logger(), "In idle state");
+
+	// Update the EtherCAT state
+	robif2b_ethercat_update(&ecat);
+	if (eddie_state->ecat.error_code < 0) {
+		RCLCPP_ERROR(get_logger(), "EtherCAT update failed.");
+		return;
+	}
+
+	// Update power board
+	robif2b_eddie_power_board_update(&power_board);
+
+	RCLCPP_INFO(
+		get_logger(),
+		"Power board: b_volt=%5.2f - b_cur[1]=%5.2f - b_pwr=%5.2f",
+		eddie_state->kelo_msr.bat_volt,
+		eddie_state->kelo_msr.bat_cur,
+		eddie_state->kelo_msr.bat_pwr
+	);
+
+	// Update drive encoders
+	robif2b_kelo_drive_encoder_update(&drive_enc);
+
+	// Update IMU
+	robif2b_kelo_drive_imu_update(&imu);
+
+	// Update wheel actuator
+	robif2b_kelo_drive_actuator_update(&wheel_act);
+
+	robif2b_kinova_gen3_update(&kinova_rightarm);
+
+	RCLCPP_INFO(get_logger(), "Eddie is in idle state.");
+
+	printf("producing event E_IDLE_EXIT_COMPILE\n");
+	produce_event(eventData, E_IDLE_EXIT_COMPILE);
+}
+
+void EddieRosInterface::compile(events *eventData, EddieState *eddie_state) {
+	RCLCPP_INFO(get_logger(), "In compile state");
+
+	produce_event(eventData, E_COMPILE_EXIT);
+}
+
+void EddieRosInterface::compute_gravity_comp(events *eventData, EddieState *eddie_state) {
+	for (int i = 0; i < num_jnts_rightarm; i++) {
+		q_rightarm(i)  = eddie_state->kinova_rightarm_state.pos_msr[i];
+		qd_rightarm(i) = eddie_state->kinova_rightarm_state.vel_msr[i];
+	}
+	for (int i = 0; i < num_jnts_leftarm; i++) {
+		q_leftarm(i)  = eddie_state->kinova_leftarm_state.pos_msr[i];
+		qd_leftarm(i) = eddie_state->kinova_leftarm_state.vel_msr[i];
+	}
+
+	f_ext_leftarm.clear();
+	f_ext_rightarm.clear();
+
+	int r = rne_id_solver_leftarm->CartToJnt(
+		q_leftarm, qd_leftarm, qdd_leftarm, f_ext_leftarm, tau_ctrl_leftarm
+	);
+	if (r < 0) {
+		RCLCPP_ERROR(get_logger(), "Left arm RNE ID solver failed");
+	}
+
+	r = rne_id_solver_rightarm->CartToJnt(
+		q_rightarm, qd_rightarm, qdd_rightarm, f_ext_rightarm, tau_ctrl_rightarm
+	);
+	if (r < 0) {
+		RCLCPP_ERROR(get_logger(), "Right arm RNE ID solver failed");
+	}
+
+	for (int i = 0; i < num_jnts_rightarm; i++) {
+		eddie_state->kinova_rightarm_state.eff_cmd[i] = tau_ctrl_rightarm(i);
+	}
+	for (int i = 0; i < num_jnts_leftarm; i++) {
+		eddie_state->kinova_leftarm_state.eff_cmd[i] = tau_ctrl_leftarm(i);
+	}
+}
+
+void EddieRosInterface::execute(events *eventData, EddieState *eddie_state) {
+	RCLCPP_INFO(get_logger(), "In execute state");
+
+	// compute gravity compensation torques using the RNE ID solver
+	compute_gravity_comp(eventData, eddie_state);
+
+	// Update the EtherCAT state
+	robif2b_ethercat_update(&ecat);
+	if (eddie_state->ecat.error_code < 0) {
+		RCLCPP_ERROR(get_logger(), "EtherCAT update failed.");
+		return;
+	}
+
+	// Update kelo
+	robif2b_kelo_drive_encoder_update(&drive_enc);
+	robif2b_kelo_drive_imu_update(&imu);
+	robif2b_kelo_drive_actuator_update(&wheel_act);
+	robif2b_eddie_power_board_update(&power_board);
+
+	// Update kinova
+	robif2b_kinova_gen3_update(&kinova_rightarm);
+
+	for (int i = 0; i < NUM_JOINTS; i++) {
+		RCLCPP_INFO(
+			get_logger(),
+			"Kinova right arm: pos_msr[%d]=%5.2f - vel_msr[%d]=%5.2f - eff_msr[%d]=%5.2f",
+			i,
+			eddie_state->kinova_rightarm_state.pos_msr[i],
+			i,
+			eddie_state->kinova_rightarm_state.vel_msr[i],
+			i,
+			eddie_state->kinova_rightarm_state.eff_msr[i]
+		);
+	}
+
+	for (int i = 0; i < NUM_DRIVES; i++) {
+		RCLCPP_INFO(
+			get_logger(),
+			"Drive %d: w_vel[0]=%5.2f - w_vel[1]=%5.2f - p_pos=%5.2f",
+			i,
+			eddie_state->kelo_msr.whl_vel[i * 2 + 0],
+			eddie_state->kelo_msr.whl_vel[i * 2 + 1],
+			eddie_state->kelo_msr.pvt_pos[i]
+		);
+	}
+	RCLCPP_INFO(
+		get_logger(),
+		"Power board: b_volt=%5.2f - b_cur[1]=%5.2f - b_pwr=%5.2f",
+		eddie_state->kelo_msr.bat_volt,
+		eddie_state->kelo_msr.bat_cur,
+		eddie_state->kelo_msr.bat_pwr
+	);
+
+	RCLCPP_INFO(get_logger(), "Eddie is executing.");
+}
+
+void EddieRosInterface::fsm_behavior(events *eventData, EddieState *eddie_state) {
+	if (consume_event(eventData, E_CONFIGURE_ENTERED)) {
+		configure(eventData, eddie_state);
+	}
+
+	if (consume_event(eventData, E_IDLE_ENTERED)) {
+		idle(eventData, eddie_state);
+	}
+
+	if (consume_event(eventData, E_COMPILE_ENTERED)) {
+		compile(eventData, eddie_state);
+	}
+
+	if (consume_event(eventData, E_EXECUTE_ENTERED)) {
+		execute(eventData, eddie_state);
+	}
+}
+
+void EddieRosInterface::run_fsm() {
+	auto rate = rclcpp::Rate(1.0 / 0.001); // 1 kHz
+
+	int count = 0;
+	while (rclcpp::ok() && keep_running) {
+		// count++;
+		if (fsm.currentStateIndex == S_EXIT) {
+			break;
+		}
+
+		produce_event(&eventData, E_STEP);
+
+		fsm_behavior(&eventData, &eddie_state);
+		fsm_step_nbx(&fsm);
+		reconfig_event_buffers(&eventData);
+
+		// rclcpp::spin_some(this->shared_from_this());
+		rate.sleep();
+	}
+
+	RCLCPP_INFO(get_logger(), "Eddie ROS interface node shutting down.");
+	robif2b_kelo_drive_actuator_stop(&wheel_act);
+	robif2b_ethercat_stop(&ecat);
+	robif2b_ethercat_shutdown(&ecat);
+	if (eddie_state.ecat.error_code < 0) {
+		RCLCPP_ERROR(get_logger(), "EtherCAT stop failed.");
+		return;
+	}
+
+	robif2b_kinova_gen3_stop(&kinova_rightarm);
+	robif2b_kinova_gen3_shutdown(&kinova_rightarm);
+}
+
+int main(int argc, char **argv) {
+	rclcpp::init(argc, argv);
+	auto node = std::make_shared<EddieRosInterface>(rclcpp::NodeOptions());
+
+	node->run_fsm();
+
+	rclcpp::shutdown();
+	return 0;
+}
