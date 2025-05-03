@@ -13,6 +13,7 @@
 
   <depend>robif2b</depend>
   <depend>coord2b</depend>
+  <depend>orocos_kdl</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

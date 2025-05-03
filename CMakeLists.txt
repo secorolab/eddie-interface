@@ -10,16 +10,19 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# ros dependencies
-find_package(ament_cmake REQUIRED)
-find_package(rclcpp REQUIRED)
-
 # non-ros dependencies
 find_package(soem REQUIRED)
 find_package(robif2b REQUIRED)
 find_package(coord2b REQUIRED)
-find_package(kdl_parser REQUIRED)
+
+# ros dependencies
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
 find_package(orocos_kdl REQUIRED)
+find_package(kdl_parser REQUIRED)
+find_package(ament_index_cpp REQUIRED)
+
+
 
 include_directories(
   include
@@ -36,6 +39,7 @@ add_executable(eddie_ros_interface
 ament_target_dependencies(eddie_ros_interface
   rclcpp
   kdl_parser
+  ament_index_cpp
 )
 target_link_libraries(eddie_ros_interface
   soem
@@ -53,7 +57,7 @@ install(
 
 install(
   DIRECTORY urdf/
-  DESTINATION lib/${PROJECT_NAME}/urdf
+  DESTINATION share/${PROJECT_NAME}/urdf
 )
 
 install(
