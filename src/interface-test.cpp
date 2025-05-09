@@ -120,13 +120,13 @@ EddieRosInterface::EddieRosInterface(const rclcpp::NodeOptions &options)
     } else {
         RCLCPP_INFO(get_logger(), "KDL tree constructed successfully");
     }
-    if (!tree.getChain("base_link", "kinova_left_bracelet_link", leftarm_chain)) {
+    if (!tree.getChain("eddie_base_link", "eddie_left_arm_end_effector_link", leftarm_chain)) {
         RCLCPP_ERROR(get_logger(), "Failed to get left arm chain");
         exit(11);
     } else {
         RCLCPP_INFO(get_logger(), "Left arm chain constructed successfully");
     }
-    if (!tree.getChain("base_link", "kinova_right_bracelet_link", rightarm_chain)) {
+    if (!tree.getChain("eddie_base_link", "eddie_right_arm_end_effector_link", rightarm_chain)) {
         RCLCPP_ERROR(get_logger(), "Failed to get right arm chain");
         exit(11);
     } else {
@@ -164,7 +164,19 @@ EddieRosInterface::EddieRosInterface(const rclcpp::NodeOptions &options)
     rne_id_solver_rightarm =
         std::make_unique<KDL::ChainIdSolver_RNE>(rightarm_chain, root_acc_rightarm.vel);
 
-    // PID controller gains
+    // std::cout << "Left arm chain: " << leftarm_chain.getNrOfJoints() << " joints, "
+    //           << leftarm_chain.getNrOfSegments() << " segments" << std::endl;
+    // std::cout << "Left arm segments: " << std::endl;
+    // for (int i = 0; i < num_segs_leftarm; i++) {
+    //     std::cout << leftarm_chain.getSegment(i).getName() << std::endl;
+    // }
+    // std::cout << "Right arm chain: " << rightarm_chain.getNrOfJoints() << " joints, "
+    //           << rightarm_chain.getNrOfSegments() << " segments" << std::endl;
+    // std::cout << "Right arm segments: " << std::endl;
+    // for (int i = 0; i < num_segs_rightarm; i++) {
+    //     std::cout << rightarm_chain.getSegment(i).getName() << std::endl;
+    // }
+
     pid_rightarm_ee_pos_x.set_gains(50.0, 0., 0.0, 0.9);
     pid_rightarm_ee_pos_y.set_gains(50.0, 0., 0.0, 0.9);
     pid_rightarm_ee_pos_z.set_gains(50.0, 0., 0.0, 0.9);
@@ -175,18 +187,7 @@ EddieRosInterface::EddieRosInterface(const rclcpp::NodeOptions &options)
     RCLCPP_INFO(get_logger(), "Eddie ROS interface node initialized.");
 }
 
-EddieRosInterface::~EddieRosInterface() {
-    // robif2b_kelo_drive_actuator_stop(&wheel_act);
-    // robif2b_ethercat_stop(&ecat);
-    // robif2b_ethercat_shutdown(&ecat);
-    // if (eddie_state.ecat.error_code < 0) {
-    //     RCLCPP_ERROR(get_logger(), "EtherCAT stop failed.");
-    //     return;
-    // }
-
-    robif2b_kinova_gen3_stop(&kinova_rightarm);
-    robif2b_kinova_gen3_shutdown(&kinova_rightarm);
-}
+EddieRosInterface::~EddieRosInterface() {}
 
 void EddieRosInterface::configure(events *eventData, EddieState *eddie_state) {
     eddie_state->num_drives              = NUM_DRIVES;
@@ -321,35 +322,6 @@ void EddieRosInterface::configure(events *eventData, EddieState *eddie_state) {
     kinova_rightarm.imu_ang_vel_msr = &eddie_state->kinova_rightarm_state.imu_ang_vel_msr[0];
     kinova_rightarm.imu_lin_acc_msr = &eddie_state->kinova_rightarm_state.imu_lin_acc_msr[0];
 
-    // RCLCPP_INFO(get_logger(), "ethercat_if: %s", eddie_state->ecat.ethernet_if);
-
-    // robif2b_ethercat_configure(&ecat);
-    // if (eddie_state->ecat.error_code < 0) {
-    //     RCLCPP_ERROR(get_logger(), "EtherCAT configuration failed.");
-    //     return;
-    // }
-
-    // robif2b_ethercat_start(&ecat);
-    // if (eddie_state->ecat.error_code < 0) {
-    //     RCLCPP_ERROR(get_logger(), "EtherCAT start failed.");
-    //     return;
-    // }
-
-    // power_board.cmd_pdo->shutdown = 0;
-    // power_board.cmd_pdo->command  = 0b00100000;
-    // robif2b_eddie_power_board_update(&power_board);
-
-    // robif2b_ethercat_update(&ecat);
-    // if (eddie_state->ecat.error_code < 0) {
-    //     RCLCPP_ERROR(get_logger(), "EtherCAT update failed.");
-    //     return;
-    // }
-
-    // kinova
-    robif2b_kinova_gen3_configure(&kinova_rightarm);
-    robif2b_kinova_gen3_recover(&kinova_rightarm);
-    robif2b_kinova_gen3_start(&kinova_rightarm);
-
     RCLCPP_INFO(get_logger(), "Eddie ROS interface configured.");
 
     RCLCPP_DEBUG(get_logger(), "In configure state");
@@ -357,18 +329,6 @@ void EddieRosInterface::configure(events *eventData, EddieState *eddie_state) {
 }
 
 void EddieRosInterface::idle(events *eventData, const EddieState *eddie_state) {
-    // // Update the EtherCAT state
-    // robif2b_ethercat_update(&ecat);
-    // if (eddie_state->ecat.error_code < 0) {
-    //     RCLCPP_ERROR(get_logger(), "EtherCAT update failed.");
-    //     return;
-    // }
-    // robif2b_eddie_power_board_update(&power_board);
-    // robif2b_kelo_drive_encoder_update(&drive_enc);
-    // robif2b_kelo_drive_imu_update(&imu);
-
-    robif2b_kinova_gen3_update(&kinova_rightarm);
-
     for (int i = 0; i < num_jnts_rightarm; i++) {
         q_rightarm(i)  = eddie_state->kinova_rightarm_state.pos_msr[i];
         qd_rightarm(i) = eddie_state->kinova_rightarm_state.vel_msr[i];
@@ -390,6 +350,7 @@ void EddieRosInterface::idle(events *eventData, const EddieState *eddie_state) {
 }
 
 void EddieRosInterface::compile(events *eventData, const EddieState *eddie_state) {
+
     RCLCPP_DEBUG(get_logger(), "Exiting compile state");
     produce_event(eventData, E_COMPILE_EXIT);
 }
@@ -485,15 +446,13 @@ void EddieRosInterface::compute_cartesian_ctrl(events *eventData, EddieState *ed
 void EddieRosInterface::execute(events *eventData, EddieState *eddie_state) {
     // RCLCPP_INFO(get_logger(), "In execute state");
 
-    // // Update the EtherCAT state
-    // robif2b_ethercat_update(&ecat);
-    // if (eddie_state->ecat.error_code < 0) {
-    //     RCLCPP_ERROR(get_logger(), "EtherCAT update failed.");
-    //     return;
-    // }
-    // robif2b_kelo_drive_encoder_update(&drive_enc);
-    // robif2b_kelo_drive_imu_update(&imu);
-    // robif2b_eddie_power_board_update(&power_board);
+    // simulate data read
+    double rightarm_jpos[NUM_JOINTS] = {
+        4.78218, -0.977604, 4.93074, -1.66029, 4.43362, -0.323419, 5.76011
+    };
+    for (int i = 0; i < num_jnts_rightarm; i++) {
+        eddie_state->kinova_rightarm_state.pos_msr[i] = rightarm_jpos[i];
+    }
 
     for (int i = 0; i < num_jnts_rightarm; i++) {
         q_rightarm(i)  = eddie_state->kinova_rightarm_state.pos_msr[i];
@@ -515,8 +474,13 @@ void EddieRosInterface::execute(events *eventData, EddieState *eddie_state) {
     // impedance control for right arm - start pose as target pose
     // compute_cartesian_ctrl(eventData, eddie_state);
 
-    // robif2b_kelo_drive_actuator_update(&wheel_act);
-    robif2b_kinova_gen3_update(&kinova_rightarm);
+    printf("Right arm tau cmd: ");
+    for (int i = 0; i < num_jnts_rightarm; i++) {
+        printf("%f ", eddie_state->kinova_rightarm_state.eff_cmd[i]);
+    }
+    printf("\n");
+
+    exit(45);
 }
 
 void EddieRosInterface::fsm_behavior(events *eventData, EddieState *eddie_state) {
@@ -562,16 +526,6 @@ void EddieRosInterface::run_fsm() {
     }
 
     RCLCPP_INFO(get_logger(), "Eddie ROS interface node shutting down.");
-    // robif2b_kelo_drive_actuator_stop(&wheel_act);
-    // robif2b_ethercat_stop(&ecat);
-    // robif2b_ethercat_shutdown(&ecat);
-    // if (eddie_state.ecat.error_code < 0) {
-    //     RCLCPP_ERROR(get_logger(), "EtherCAT stop failed.");
-    //     return;
-    // }
-
-    robif2b_kinova_gen3_stop(&kinova_rightarm);
-    robif2b_kinova_gen3_shutdown(&kinova_rightarm);
 }
 
 int main(int argc, char **argv) {

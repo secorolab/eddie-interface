@@ -43,12 +43,30 @@
 #define NUM_SLAVES 5
 #define NUM_JOINTS 7
 
+#define KINOVA_TAU_CMD_LIMIT 30.0
+
+double evaluate_equality_constraint(double quantity, double reference);
+double evaluate_less_than_constraint(double quantity, double threshold);
+double evaluate_greater_than_constraint(double quantity, double threshold);
+double evaluate_bilateral_constraint(double quantity, double lower, double upper);
+void saturate(double *value, double min, double max);
+
 class PID {
   public:
     PID() = default;
-    PID(double p_gain, double i_gain, double d_gain, double decay_rate = 0.0);
+    PID(double p_gain,
+        double i_gain,
+        double d_gain,
+        double error_sum_tol = 1.0,
+        double decay_rate    = 0.0);
 
-    void set_gains(double p_gain, double i_gain, double d_gain, double decay_rate = 0.0);
+    void set_gains(
+        double p_gain,
+        double i_gain,
+        double d_gain,
+        double error_sum_tol = 1.0,
+        double decay_rate    = 0.0
+    );
 
     double control(double error, double dt = 1.0);
 
@@ -58,7 +76,87 @@ class PID {
     double kp;
     double ki;
     double kd;
+    double err_sum_tol;
     double decay_rate;
+};
+
+struct EddieState {
+    int num_drives;
+    struct {
+        struct timespec cycle_start;
+        struct timespec cycle_end;
+        long cycle_time_msr; // [us]
+        long cycle_time_exp; // [us]
+    } time;
+    struct {
+        struct robif2b_kelo_drive_api_msr_pdo drv_msr_pdo[NUM_DRIVES];
+        struct robif2b_kelo_drive_api_cmd_pdo drv_cmd_pdo[NUM_DRIVES];
+        struct robif2b_eddie_power_board_api_msr_pdo pb_msr_pdo;
+        struct robif2b_eddie_power_board_api_cmd_pdo pb_cmd_pdo;
+    } ecat_comm;
+    struct {
+        const char *ethernet_if;
+        int error_code;
+        int num_exposed_slaves;
+        int num_found_slaves;
+        int num_active_slaves;
+        int slave_idx[NUM_SLAVES];
+        const char *name[NUM_SLAVES];
+        unsigned int prod_code[NUM_SLAVES];
+        size_t input_size[NUM_SLAVES];
+        size_t output_size[NUM_SLAVES];
+        bool is_connected[NUM_SLAVES];
+    } ecat;
+    struct {
+        double pvt_off[NUM_DRIVES];
+        double pvt_pos[NUM_DRIVES];
+        double pvt_vel[NUM_DRIVES];
+        double whl_pos[NUM_DRIVES * 2];
+        double whl_vel[NUM_DRIVES * 2];
+        double imu_ang_vel[NUM_DRIVES * 3];
+        double imu_lin_acc[NUM_DRIVES * 3];
+        double bat_volt;
+        double bat_cur;
+        double bat_pwr;
+        uint64_t time_stamp;
+        uint16_t status;
+    } kelo_msr;
+    struct {
+        enum robif2b_ctrl_mode ctrl_mode[NUM_DRIVES];
+        double vel[NUM_DRIVES * 2];
+        double trq[NUM_DRIVES * 2];
+        double cur[NUM_DRIVES * 2];
+        double max_current[NUM_DRIVES * 2];
+        double trq_const[NUM_DRIVES * 2];
+    } kelo_cmd;
+    struct {
+        bool success;
+        enum robif2b_ctrl_mode ctrl_mode;
+        double pos_msr[NUM_JOINTS];
+        double vel_msr[NUM_JOINTS];
+        double eff_msr[NUM_JOINTS];
+        double cur_msr[NUM_JOINTS];
+        double pos_cmd[NUM_JOINTS];
+        double vel_cmd[NUM_JOINTS];
+        double eff_cmd[NUM_JOINTS];
+        double cur_cmd[NUM_JOINTS];
+        double imu_ang_vel_msr[3];
+        double imu_lin_acc_msr[3];
+    } kinova_rightarm_state;
+    struct {
+        bool success;
+        enum robif2b_ctrl_mode ctrl_mode;
+        double pos_msr[NUM_JOINTS];
+        double vel_msr[NUM_JOINTS];
+        double eff_msr[NUM_JOINTS];
+        double cur_msr[NUM_JOINTS];
+        double pos_cmd[NUM_JOINTS];
+        double vel_cmd[NUM_JOINTS];
+        double eff_cmd[NUM_JOINTS];
+        double cur_cmd[NUM_JOINTS];
+        double imu_ang_vel_msr[3];
+        double imu_lin_acc_msr[3];
+    } kinova_leftarm_state;
 };
 
 class EddieRosInterface : public rclcpp::Node {
@@ -67,84 +165,6 @@ class EddieRosInterface : public rclcpp::Node {
 
     ~EddieRosInterface();
 
-    struct EddieState {
-        int num_drives;
-        struct {
-            struct timespec cycle_start;
-            struct timespec cycle_end;
-            long cycle_time_msr; // [us]
-            long cycle_time_exp; // [us]
-        } time;
-        struct {
-            struct robif2b_kelo_drive_api_msr_pdo drv_msr_pdo[NUM_DRIVES];
-            struct robif2b_kelo_drive_api_cmd_pdo drv_cmd_pdo[NUM_DRIVES];
-            struct robif2b_eddie_power_board_api_msr_pdo pb_msr_pdo;
-            struct robif2b_eddie_power_board_api_cmd_pdo pb_cmd_pdo;
-        } ecat_comm;
-        struct {
-            const char *ethernet_if;
-            int error_code;
-            int num_exposed_slaves;
-            int num_found_slaves;
-            int num_active_slaves;
-            int slave_idx[NUM_SLAVES];
-            const char *name[NUM_SLAVES];
-            unsigned int prod_code[NUM_SLAVES];
-            size_t input_size[NUM_SLAVES];
-            size_t output_size[NUM_SLAVES];
-            bool is_connected[NUM_SLAVES];
-        } ecat;
-        struct {
-            double pvt_off[NUM_DRIVES];
-            double pvt_pos[NUM_DRIVES];
-            double pvt_vel[NUM_DRIVES];
-            double whl_pos[NUM_DRIVES * 2];
-            double whl_vel[NUM_DRIVES * 2];
-            double imu_ang_vel[NUM_DRIVES * 3];
-            double imu_lin_acc[NUM_DRIVES * 3];
-            double bat_volt;
-            double bat_cur;
-            double bat_pwr;
-            uint64_t time_stamp;
-            uint16_t status;
-        } kelo_msr;
-        struct {
-            enum robif2b_ctrl_mode ctrl_mode[NUM_DRIVES];
-            double vel[NUM_DRIVES * 2];
-            double trq[NUM_DRIVES * 2];
-            double cur[NUM_DRIVES * 2];
-            double max_current[NUM_DRIVES * 2];
-            double trq_const[NUM_DRIVES * 2];
-        } kelo_cmd;
-        struct {
-            bool success;
-            enum robif2b_ctrl_mode ctrl_mode;
-            double pos_msr[NUM_JOINTS];
-            double vel_msr[NUM_JOINTS];
-            double eff_msr[NUM_JOINTS];
-            double cur_msr[NUM_JOINTS];
-            double pos_cmd[NUM_JOINTS];
-            double vel_cmd[NUM_JOINTS];
-            double eff_cmd[NUM_JOINTS];
-            double cur_cmd[NUM_JOINTS];
-            double imu_ang_vel_msr[3];
-            double imu_lin_acc_msr[3];
-        } kinova_rightarm_state;
-        struct {
-            bool success;
-            enum robif2b_ctrl_mode ctrl_mode;
-            double pos_msr[NUM_JOINTS];
-            double vel_msr[NUM_JOINTS];
-            double eff_msr[NUM_JOINTS];
-            double cur_msr[NUM_JOINTS];
-            double pos_cmd[NUM_JOINTS];
-            double vel_cmd[NUM_JOINTS];
-            double eff_cmd[NUM_JOINTS];
-            double cur_cmd[NUM_JOINTS];
-            double imu_ang_vel_msr[3];
-            double imu_lin_acc_msr[3];
-        } kinova_leftarm_state;
-    };
     EddieState eddie_state;
 
     struct robif2b_ethercat ecat;
@@ -173,8 +193,8 @@ class EddieRosInterface : public rclcpp::Node {
 
     // sm methods
     void configure(events *eventData, EddieState *eddie_state);
-    void idle(events *eventData, EddieState *eddie_state);
-    void compile(events *eventData, EddieState *eddie_state);
+    void idle(events *eventData, const EddieState *eddie_state);
+    void compile(events *eventData, const EddieState *eddie_state);
     void execute(events *eventData, EddieState *eddie_state);
 
     void fsm_behavior(events *eventData, EddieState *eddie_state);
@@ -204,8 +224,6 @@ class EddieRosInterface : public rclcpp::Node {
     KDL::Wrenches f_ext_leftarm;
     KDL::Frame pose_leftarm_ee;
     KDL::Twist twist_leftarm_ee;
-    std::unique_ptr<KDL::ChainJntToJacDotSolver> jnt_to_jac_dot_solver_leftarm;
-    std::unique_ptr<KDL::ChainIkSolverVel_pinv> ik_solver_vel_leftarm;
     std::unique_ptr<KDL::ChainIdSolver_RNE> rne_id_solver_leftarm;
 
     int num_jnts_rightarm;
@@ -218,8 +236,6 @@ class EddieRosInterface : public rclcpp::Node {
     KDL::Wrenches f_ext_rightarm;
     KDL::Frame pose_rightarm_ee;
     KDL::Twist twist_rightarm_ee;
-    std::unique_ptr<KDL::ChainJntToJacDotSolver> jnt_to_jac_dot_solver_rightarm;
-    std::unique_ptr<KDL::ChainIkSolverVel_pinv> ik_solver_vel_rightarm;
     std::unique_ptr<KDL::ChainIdSolver_RNE> rne_id_solver_rightarm;
 
     KDL::Frame target_pose_leftarm_ee;

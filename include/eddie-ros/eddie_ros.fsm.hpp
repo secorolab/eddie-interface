@@ -1,18 +1,21 @@
 /*
  * This is an auto-generated file. Do not edit it directly.
+ * 
+ * FSM: eddie_ros
+ * FSM Description: 
  *
  * -----------------------------------------------------
  * Usage example:
  * -----------------------------------------------------
 
-#include "eddie_ros.hpp"
+#include "eddie_ros.fsm.hpp"
 
 struct user_data {
 
 };
 
 void yyyy_behavior(struct user_data *userData, struct events *eventData) {
-    ... do something
+    // ... do something
 
     produce_event(eventData, E_ZZZZ);
 }
@@ -50,7 +53,15 @@ int main() {
 #include "coord2b/functions/event_loop.h"
 
 // sm states
-enum e_states { S_START = 0, S_CONFIGURE, S_IDLE, S_COMPILE, S_EXECUTE, S_EXIT, NUM_STATES };
+enum e_states {
+    S_START = 0,
+    S_CONFIGURE,
+    S_IDLE,
+    S_COMPILE,
+    S_EXECUTE,
+    S_EXIT,
+    NUM_STATES
+};
 
 // sm events
 enum e_events {
@@ -92,112 +103,126 @@ enum e_reactions {
 
 // sm states
 inline struct state states[NUM_STATES] = {
-    {.name = "S_start"},
-    {.name = "S_configure"},
-    {.name = "S_idle"},
-    {.name = "S_compile"},
-    {.name = "S_execute"},
-    {.name = "S_exit"}
+    {.name = "S_start"}, 
+    {.name = "S_configure"}, 
+    {.name = "S_idle"}, 
+    {.name = "S_compile"}, 
+    {.name = "S_execute"}, 
+    {.name = "S_exit"} 
 };
 
 // sm transition table
 inline struct transition transitions[NUM_TRANSITIONS] = {
     {
         .startStateIndex = S_START,
-        .endStateIndex   = S_CONFIGURE,
-    },
+        .endStateIndex = S_CONFIGURE,
+    }, 
     {
         .startStateIndex = S_CONFIGURE,
-        .endStateIndex   = S_IDLE,
-    },
+        .endStateIndex = S_IDLE,
+    }, 
     {
         .startStateIndex = S_IDLE,
-        .endStateIndex   = S_IDLE,
-    },
+        .endStateIndex = S_IDLE,
+    }, 
     {
         .startStateIndex = S_IDLE,
-        .endStateIndex   = S_EXECUTE,
-    },
+        .endStateIndex = S_EXECUTE,
+    }, 
     {
         .startStateIndex = S_IDLE,
-        .endStateIndex   = S_COMPILE,
-    },
+        .endStateIndex = S_COMPILE,
+    }, 
     {
         .startStateIndex = S_COMPILE,
-        .endStateIndex   = S_EXECUTE,
-    },
+        .endStateIndex = S_EXECUTE,
+    }, 
     {
         .startStateIndex = S_EXECUTE,
-        .endStateIndex   = S_EXECUTE,
-    }
+        .endStateIndex = S_EXECUTE,
+    } 
 };
 
 // sm reaction table
 inline struct event_reaction reactions[NUM_REACTIONS] = {
     {
         .conditionEventIndex = E_CONFIGURE_EXIT,
-        .transitionIndex     = T_CONFIGURE_IDLE,
-        .numFiredEvents      = 1,
-        .firedEventIndices   = new unsigned int[1]{E_IDLE_ENTERED},
-    },
+        .transitionIndex = T_CONFIGURE_IDLE,
+        .numFiredEvents = 1,
+        .firedEventIndices = new unsigned int[1]{
+            E_IDLE_ENTERED 
+        },
+    }, 
     {
         .conditionEventIndex = E_IDLE_EXIT_EXECUTE,
-        .transitionIndex     = T_IDLE_EXECUTE,
-        .numFiredEvents      = 1,
-        .firedEventIndices   = new unsigned int[1]{E_EXECUTE_ENTERED},
-    },
+        .transitionIndex = T_IDLE_EXECUTE,
+        .numFiredEvents = 1,
+        .firedEventIndices = new unsigned int[1]{
+            E_EXECUTE_ENTERED 
+        },
+    }, 
     {
         .conditionEventIndex = E_IDLE_EXIT_COMPILE,
-        .transitionIndex     = T_IDLE_COMPILE,
-        .numFiredEvents      = 1,
-        .firedEventIndices   = new unsigned int[1]{E_COMPILE_ENTERED},
-    },
+        .transitionIndex = T_IDLE_COMPILE,
+        .numFiredEvents = 1,
+        .firedEventIndices = new unsigned int[1]{
+            E_COMPILE_ENTERED 
+        },
+    }, 
     {
         .conditionEventIndex = E_COMPILE_EXIT,
-        .transitionIndex     = T_COMPILE_EXECUTE,
-        .numFiredEvents      = 1,
-        .firedEventIndices   = new unsigned int[1]{E_EXECUTE_ENTERED},
-    },
+        .transitionIndex = T_COMPILE_EXECUTE,
+        .numFiredEvents = 1,
+        .firedEventIndices = new unsigned int[1]{
+            E_EXECUTE_ENTERED 
+        },
+    }, 
     {
         .conditionEventIndex = E_STEP,
-        .transitionIndex     = T_START_CONFIGURE,
-        .numFiredEvents      = 1,
-        .firedEventIndices   = new unsigned int[1]{E_CONFIGURE_ENTERED},
-    },
+        .transitionIndex = T_START_CONFIGURE,
+        .numFiredEvents = 1,
+        .firedEventIndices = new unsigned int[1]{
+            E_CONFIGURE_ENTERED 
+        },
+    }, 
     {
         .conditionEventIndex = E_STEP,
-        .transitionIndex     = T_IDLE_IDLE,
-        .numFiredEvents      = 1,
-        .firedEventIndices   = new unsigned int[1]{E_IDLE_ENTERED},
-    },
+        .transitionIndex = T_IDLE_IDLE,
+        .numFiredEvents = 1,
+        .firedEventIndices = new unsigned int[1]{
+            E_IDLE_ENTERED 
+        },
+    }, 
     {
         .conditionEventIndex = E_STEP,
-        .transitionIndex     = T_EXECUTE_EXECUTE,
-        .numFiredEvents      = 1,
-        .firedEventIndices   = new unsigned int[1]{E_EXECUTE_ENTERED},
-    }
+        .transitionIndex = T_EXECUTE_EXECUTE,
+        .numFiredEvents = 1,
+        .firedEventIndices = new unsigned int[1]{
+            E_EXECUTE_ENTERED 
+        },
+    } 
 };
 
 // sm event data
 inline struct events eventData = {
-    .numEvents     = NUM_EVENTS,
+    .numEvents = NUM_EVENTS,
     .currentEvents = new _Bool[NUM_EVENTS]{false},
-    .futureEvents  = new _Bool[NUM_EVENTS]{false},
+    .futureEvents = new _Bool[NUM_EVENTS]{false},
 };
 
 // sm fsm struct
 inline struct fsm_nbx fsm = {
-    .numReactions   = NUM_REACTIONS,
+    .numReactions = NUM_REACTIONS,
     .numTransitions = NUM_TRANSITIONS,
-    .numStates      = NUM_STATES,
+    .numStates = NUM_STATES,
 
-    .states            = states,
-    .startStateIndex   = S_START,
-    .endStateIndex     = S_EXIT,
+    .states = states,
+    .startStateIndex = S_START,
+    .endStateIndex = S_EXIT,
     .currentStateIndex = S_START,
 
-    .eventData   = &eventData,
-    .reactions   = reactions,
+    .eventData = &eventData,
+    .reactions = reactions,
     .transitions = transitions,
 };
 
